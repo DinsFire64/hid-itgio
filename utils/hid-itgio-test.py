@@ -11,8 +11,6 @@ import time
 
 ITGIO_OUTPUT_LOCATION = "/sys/class/leds/itgio::output{}/brightness"
 
-#TODO: Fix my ITGIO to ensure these names are correct. 
-#(??) Are the unconfirmed bits, but from what I've read, they are correct.
 light_order = [
     (0, "P1 Right"),
     (1, "P1 Left"),
@@ -22,14 +20,14 @@ light_order = [
     (5, "P2 Left"),
     (6, "P2 Down"),
     (7, "P2 Up"),
-    (8, "P1 Upper Left Marquee (??)"),
+    (8, "P1 Upper Left Marquee"),
     (9, "P1 Lower Left Marquee"),
-    (10, "P2 Upper Right Marquee (??)"),
-    (11, "P2 Lower Right Marquee (??)"),
-    (12, "P2 Button (??)"),
+    (10, "P2 Upper Right Marquee"),
+    (11, "P2 Lower Right Marquee"),
+    (12, "P2 Button"),
     (13, "P1 Button"),
     (14, "Coin Counter"),
-    (15, "Neon (??)"),
+    (15, "Neon"),
 ]
 
 def set_light(light_num, state):
@@ -51,7 +49,7 @@ if __name__ == "__main__":
         #clear the lights first.
         for light in light_order:
             set_light(light[0], 0)
-        
+
         while 1:
             for light in light_order:
                 print("Turning on: " + str(light[1]))

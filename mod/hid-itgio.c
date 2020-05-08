@@ -1,20 +1,20 @@
 /*
  * hig-itgio.c
  * din
- * 
+ *
  * Kernel module to easily adapt the UltraCade ITGIO to the HID and lighting subsystem in Linux.
- * 
- * Please note for this module to work, the following quirks 
+ *
+ * Please note for this module to work, the following quirks
  * need to be passed to your kernel on boot or to usbhid on runtime:
  * HID_QUIRK_HIDDEV_FORCE | HID_QUIRK_NO_IGNORE | HID_QUIRK_ALWAYS_POLL = 0x40000410
- * 
+ *
  * Example: modprobe -v usbhid "quirks=0x07c0:0x1584:0x40000410"
- * Example: usbhid.quirks=0x07c0:0x1584:0x40000410 
- * 
+ * Example: usbhid.quirks=0x07c0:0x1584:0x40000410
+ *
  * This module was based on Devin J. Pohly's PIUIO kernel module. Thank you for your work.
- * 
+ *
  * Thank you for playing!
- * 
+ *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
  * published by the Free Software Foundation, version 2.
@@ -26,7 +26,9 @@
 
 //Constants for this device.
 #define ITGIO_MAX_LEDS 16
-#define ITGIO_REPORT_SIZE 4
+#define ITGIO_REPORT_SIZE 5
+
+#define ITGIO_VID 0x07C0
 
 //Names to be found in /sys/class/leds/
 static const char *led_names[] = {
@@ -69,21 +71,29 @@ struct itgio_device *itgdev;
 
 /*
  * Method that flips the bits of the ITGIO as they are active low instead of active high.
- * 
+ *
  * The buttom type bytes are unused in this device, so they are shifted away so only the lower
  * two bytes contain the state of the buttons.
  */
 static int itgio_raw_event(struct hid_device *hdev, struct hid_report *report,
                            u8 *data, int len)
 {
+
+        //hid_info(hdev, "read: %d %d-%d-%d-%d", len, data[0], data[1], data[2], data[3]);
+
         if (len >= 4)
         {
-                //itgio is active low, so invert it
+                //itgio will return a 4byte response when an event occurs
+                //the first two bytes [0,1] are an echo of the current state of the lights (active high)
+                //the last two [2,3] are representitive of the state of the gamepad (active low)
+
                 //shift bits left so all of our inputs are on the bottom 16 bits.
+                //itgio is active low, so invert it
                 data[0] = ~data[2];
                 data[1] = ~data[3];
 
-                //bits are unused/unmapped in ITGIO, so let's just zero them out.
+                //these are meaningless as we are setting the
+                //input ourselves, we know the lighting state.
                 data[2] = 0;
                 data[3] = 0;
         }
@@ -92,7 +102,7 @@ static int itgio_raw_event(struct hid_device *hdev, struct hid_report *report,
 }
 
 /*
- * Method that is called by the linux kernel on a change in 
+ * Method that is called by the linux kernel on a change in
  * the state of the brightness file hook in /sys/class/leds
  */
 static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
@@ -102,7 +112,6 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
         int index;
         int byte_num;
         int ret;
-        uint8_t prev_val;
 
         index = led - itgdev->led;
         if (index > ITGIO_MAX_LEDS - 1)
@@ -112,14 +121,14 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
         }
 
         //hid_info(itgdev->hdev, "setting led #%d to %d", index, b);
-
         byte_num = (index / 8);
         index = index - (byte_num * 8);
 
+        //data starts at index 1.
+        byte_num++;
+
         //Lock the writing/reading in case multiple lights are changed in succession.
         mutex_lock(&itgdev->lock);
-
-        prev_val = itgdev->buf[byte_num];
 
         //set or clear the bit.
         if (b)
@@ -131,20 +140,15 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
                 itgdev->buf[byte_num] &= ~(1 << index);
         }
 
-        //hid_err(itgdev->hdev, "value: b#%d-%d %d-%d", byte_num, index, itgdev->buf[0], itgdev->buf[1]);
+        //hid_info(itgdev->hdev, "write: b#%d-%d %d-%d-%d-%d-%d", byte_num, index, itgdev->buf[0], itgdev->buf[1], itgdev->buf[2], itgdev->buf[3], itgdev->buf[3]);
 
-        //only write to the device if there is a change in the light state.
-        if (prev_val != itgdev->buf[byte_num])
-        {
-                ret = hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
-                                         ITGIO_REPORT_SIZE,
-                                         HID_OUTPUT_REPORT,
-                                         HID_REQ_SET_REPORT);
-        }
-        else
-        {
-                //hid_info(itgdev->hdev, "no change in byte %d", byte_num);
-        }
+        //ensure we are talking to the lighting device and not the "gamepad" device.
+        itgdev->buf[0] = 0x00;
+
+        ret = hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
+                                 ITGIO_REPORT_SIZE,
+                                 HID_OUTPUT_REPORT,
+                                 HID_REQ_SET_REPORT);
 
         mutex_unlock(&itgdev->lock);
 }
@@ -170,11 +174,10 @@ static int itgio_obj_init(struct hid_device *hdev)
                 return -ENOMEM;
         }
 
-        //fill active high to start.
-        for (i = 0; i < ITGIO_REPORT_SIZE; i++)
-        {
-                itgdev->buf[i] = 0xFF;
-        }
+        //top two bytes need to be high in order to enable input
+        //...I think that's the way it's worked for me so far...
+        itgdev->buf[ITGIO_REPORT_SIZE - 1] = 0xFF;
+        itgdev->buf[ITGIO_REPORT_SIZE - 2] = 0xFF;
 
         //ensure that we don't attempt to unregister a device that isn't registered.
         for (i = 0; i < ITGIO_MAX_LEDS; i++)
@@ -232,7 +235,7 @@ out_unregister:
 
 /*
  * Method that conforms the report descriptor to the HID standard.
- * 
+ *
  * This allows the rest of the HID system to regard this device as a standard gamepad,
  * and remove the lights as we are taking care of that in this kernel module.
  */
@@ -241,39 +244,28 @@ static __u8 *itgio_report_fixup(struct hid_device *hdev, __u8 *rdesc,
 {
         //TODO: See if we can add QUIRK flags here or similar to reduce the manual loading of quirks by the user.
 
-        //convert this object to a gamepad.
-        if (*rsize > 4 && rdesc[2] == 0x09 && rdesc[3] == 0x00)
+        //Use the REPORT_ID to discern the two interfaces.
+        if (*rsize >= 15 && rdesc[14] == 0x85 && rdesc[15] == 0xff)
         {
-                rdesc[2] = 0x09;
-                rdesc[3] = 0x05;
-        }
-
-        //remove the lights as an output, we will be taking care of that.
-        if (*rsize > 30 && rdesc[28] == 0x75 && rdesc[29] == 0x01)
-        {
-                rdesc[26] = 0x95;
-                rdesc[27] = 0x00;
-
-                rdesc[28] = 0x75;
-                rdesc[29] = 0x00;
-        }
-
-        //more light removal, and seperating through the two interfaces.
-        //TODO: Find a cleaner way to determine the interface number.
-        if (*rsize > 12 && rdesc[10] == 0x75 && rdesc[11] == 0x01)
-        {
-                //this is the input device
-                rdesc[10] = 0x75;
-                rdesc[11] = 0x00;
-
-                rdesc[18] = 0x95;
-                rdesc[19] = 0x00;
+                //we will not be using this device, so corrupt the report to make
+                //the kernel ignore it.
+                //TODO: make this more eliquant, this feels hacky (but it works...)
+                rdesc[0] = 0x00;
         }
         else
         {
-                //this is the output device.
+                //make this device a gamepad.
+                rdesc[2] = 0x09;
+                rdesc[3] = 0x05;
+
+                //this is my output, so register the LEDs.
                 itgio_obj_init(hdev);
                 itgio_leds_init(hdev);
+
+                //disable the input of this device by zeroing out the
+                //input (device to computer) size.
+                rdesc[28] = 0x75;
+                rdesc[29] = 0x00;
         }
 
         return rdesc;
@@ -310,9 +302,9 @@ static void itgio_remove(struct hid_device *hdev)
 }
 
 static const struct hid_device_id itgio_devices[] = {
-    {HID_USB_DEVICE(0x07C0, 0x1501)},
-    {HID_USB_DEVICE(0x07C0, 0x1582)},
-    {HID_USB_DEVICE(0x07C0, 0x1584)},
+    {HID_USB_DEVICE(ITGIO_VID, 0x1501)},
+    {HID_USB_DEVICE(ITGIO_VID, 0x1582)},
+    {HID_USB_DEVICE(ITGIO_VID, 0x1584)},
 
     {}};
 MODULE_DEVICE_TABLE(hid, itgio_devices);
@@ -328,6 +320,6 @@ static struct hid_driver itgio_driver = {
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("din <dinsfire64@gmail.com>");
 MODULE_DESCRIPTION("HID Driver for UltraCade ITG-IO");
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
 
 module_hid_driver(itgio_driver);
