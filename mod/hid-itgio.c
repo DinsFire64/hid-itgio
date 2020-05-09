@@ -23,6 +23,10 @@
 #include <linux/device.h>
 #include <linux/hid.h>
 #include <linux/module.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+
+struct task_struct *itgio_write_thread_tsk;
 
 //Constants for this device.
 #define ITGIO_MAX_LEDS 16
@@ -65,6 +69,7 @@ struct itgio_device
         u8 *buf;
         struct mutex lock;
         struct itgio_led_device led[ITGIO_MAX_LEDS];
+        bool run_thread;
 };
 
 struct itgio_device *itgdev;
@@ -111,7 +116,6 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
         struct itgio_device *itgdev = led->itgdev;
         int index;
         int byte_num;
-        int ret;
 
         index = led - itgdev->led;
         if (index > ITGIO_MAX_LEDS - 1)
@@ -140,17 +144,34 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
                 itgdev->buf[byte_num] &= ~(1 << index);
         }
 
-        //hid_info(itgdev->hdev, "write: b#%d-%d %d-%d-%d-%d-%d", byte_num, index, itgdev->buf[0], itgdev->buf[1], itgdev->buf[2], itgdev->buf[3], itgdev->buf[3]);
-
-        //ensure we are talking to the lighting device and not the "gamepad" device.
-        itgdev->buf[0] = 0x00;
-
-        ret = hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
-                                 ITGIO_REPORT_SIZE,
-                                 HID_OUTPUT_REPORT,
-                                 HID_REQ_SET_REPORT);
-
         mutex_unlock(&itgdev->lock);
+
+        //lights are changed on the next polling thread.
+}
+
+static int itgio_write_thread(void *data)
+{
+        while(itgdev->run_thread && !kthread_should_stop())
+        {
+                mutex_lock(&itgdev->lock);
+
+                //hid_info(itgdev->hdev, "write: %d-%d-%d-%d-%d", itgdev->buf[0], itgdev->buf[1], itgdev->buf[2], itgdev->buf[3], itgdev->buf[4]);
+
+                //ensure we are talking to the lighting device and not the "gamepad" device.
+                itgdev->buf[0] = 0x00;
+
+                hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
+                                                ITGIO_REPORT_SIZE,
+                                                HID_OUTPUT_REPORT,
+                                                HID_REQ_SET_REPORT);
+
+                mutex_unlock(&itgdev->lock);
+
+                //TODO: Learn more about scheduling this task rather than sleeping a loop.
+                msleep(1);
+        }
+
+        return 0;
 }
 
 /*
@@ -186,6 +207,10 @@ static int itgio_obj_init(struct hid_device *hdev)
         }
 
         itgdev->hdev = hdev;
+
+        //start the input thread.
+        itgdev->run_thread = true;
+        itgio_write_thread_tsk = kthread_run(itgio_write_thread, NULL, "itgio_write_thread");
 
         return 0;
 }
@@ -283,6 +308,17 @@ static void itgio_remove(struct hid_device *hdev)
 
         if (itgdev != NULL)
         {
+                //let the thread exit, *then* ask for a lock, otherwise we could be in spinlock.
+                itgdev->run_thread = false;
+                if(itgio_write_thread_tsk != NULL && itgio_write_thread_tsk->state == 0)
+                {
+                        kthread_stop(itgio_write_thread_tsk);
+                }
+
+                //TODO: Learn more about scheduling in the linux kernel
+                //THIS IS NOT CORRECT, BUT IT """WORKS"""
+                msleep(500);
+
                 mutex_lock(&itgdev->lock);
 
                 for (i = 0; i < ITGIO_MAX_LEDS; i++)
