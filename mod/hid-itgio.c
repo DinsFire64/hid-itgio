@@ -6,10 +6,10 @@
  *
  * Please note for this module to work, the following quirks
  * need to be passed to your kernel on boot or to usbhid on runtime:
- * HID_QUIRK_HIDDEV_FORCE | HID_QUIRK_NO_IGNORE | HID_QUIRK_ALWAYS_POLL = 0x40000410
+ * HID_QUIRK_HIDDEV_FORCE | HID_QUIRK_NO_IGNORE = 0x40000010
  *
- * Example: modprobe -v usbhid "quirks=0x07c0:0x1584:0x40000410"
- * Example: usbhid.quirks=0x07c0:0x1584:0x40000410
+ * Example: modprobe -v usbhid "quirks=0x07c0:0x1584:0x40000010"
+ * Example: usbhid.quirks=0x07c0:0x1584:0x40000010
  *
  * This module was based on Devin J. Pohly's PIUIO kernel module. Thank you for your work.
  *
@@ -25,8 +25,6 @@
 #include <linux/module.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
-
-struct task_struct *itgio_write_thread_tsk;
 
 //Constants for this device.
 #define ITGIO_MAX_LEDS 16
@@ -69,7 +67,6 @@ struct itgio_device
         u8 *buf;
         struct mutex lock;
         struct itgio_led_device led[ITGIO_MAX_LEDS];
-        bool run_thread;
 };
 
 struct itgio_device *itgdev;
@@ -131,7 +128,6 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
         //data starts at index 1.
         byte_num++;
 
-        //Lock the writing/reading in case multiple lights are changed in succession.
         mutex_lock(&itgdev->lock);
 
         //set or clear the bit.
@@ -142,36 +138,21 @@ static void itgio_led_set(struct led_classdev *dev, enum led_brightness b)
         else
         {
                 itgdev->buf[byte_num] &= ~(1 << index);
-        }
+        }      
+
+        //hid_info(itgdev->hdev, "write: %d-%d-%d-%d-%d", itgdev->buf[0], itgdev->buf[1], itgdev->buf[2], itgdev->buf[3], itgdev->buf[4]);
+
+        //ensure we are talking to the lighting device and not the "gamepad" device.
+        itgdev->buf[0] = 0x00;
+
+        hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
+                                        ITGIO_REPORT_SIZE,
+                                        HID_OUTPUT_REPORT,
+                                        HID_REQ_SET_REPORT);
 
         mutex_unlock(&itgdev->lock);
 
         //lights are changed on the next polling thread.
-}
-
-static int itgio_write_thread(void *data)
-{
-        while(itgdev->run_thread && !kthread_should_stop())
-        {
-                mutex_lock(&itgdev->lock);
-
-                //hid_info(itgdev->hdev, "write: %d-%d-%d-%d-%d", itgdev->buf[0], itgdev->buf[1], itgdev->buf[2], itgdev->buf[3], itgdev->buf[4]);
-
-                //ensure we are talking to the lighting device and not the "gamepad" device.
-                itgdev->buf[0] = 0x00;
-
-                hid_hw_raw_request(itgdev->hdev, itgdev->buf[0], itgdev->buf,
-                                                ITGIO_REPORT_SIZE,
-                                                HID_OUTPUT_REPORT,
-                                                HID_REQ_SET_REPORT);
-
-                mutex_unlock(&itgdev->lock);
-
-                //TODO: Learn more about scheduling this task rather than sleeping a loop.
-                msleep(1);
-        }
-
-        return 0;
 }
 
 /*
@@ -195,6 +176,12 @@ static int itgio_obj_init(struct hid_device *hdev)
                 return -ENOMEM;
         }
 
+        //clear the buff
+        for(i = 0; i < ITGIO_REPORT_SIZE; i++)
+        {
+                itgdev->buf[i] = 0x00;
+        }
+
         //top two bytes need to be high in order to enable input
         //...I think that's the way it's worked for me so far...
         itgdev->buf[ITGIO_REPORT_SIZE - 1] = 0xFF;
@@ -207,10 +194,6 @@ static int itgio_obj_init(struct hid_device *hdev)
         }
 
         itgdev->hdev = hdev;
-
-        //start the input thread.
-        itgdev->run_thread = true;
-        itgio_write_thread_tsk = kthread_run(itgio_write_thread, NULL, "itgio_write_thread");
 
         return 0;
 }
@@ -308,14 +291,6 @@ static void itgio_remove(struct hid_device *hdev)
 
         if (itgdev != NULL)
         {
-                //let the thread exit, *then* ask for a lock, otherwise we could be in spinlock.
-                itgdev->run_thread = false;
-                if(itgio_write_thread_tsk != NULL && itgio_write_thread_tsk->state == 0)
-                {
-                        kthread_stop(itgio_write_thread_tsk);
-                }
-
-                //TODO: Learn more about scheduling in the linux kernel
                 //THIS IS NOT CORRECT, BUT IT """WORKS"""
                 msleep(500);
 
@@ -356,6 +331,6 @@ static struct hid_driver itgio_driver = {
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("din <dinsfire64@gmail.com>");
 MODULE_DESCRIPTION("HID Driver for UltraCade ITG-IO");
-MODULE_VERSION("0.2");
+MODULE_VERSION("0.3");
 
 module_hid_driver(itgio_driver);

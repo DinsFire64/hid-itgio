@@ -20,15 +20,15 @@ Documentation for this device can be found at [this link on UltraCade's website]
 
 In order to properly use this, the linux kernel needs to be informed of the HID quirks of this device.
 
-There are two ways of doing this, one is to add the quirks to your linux kernel parameters or add the quirk during runtime.
+There are two ways of doing this, one is to add the quirks to your linux kernel parameters or add the quirks during runtime.
 
 To load at runtime, just use modprobe to unload and reload the `usbhid` kernel module.
 
-`rmmod usbhid; modprobe -v usbhid "quirks=0x07c0:0x1584:0x40000410"`
+`rmmod usbhid; modprobe -v usbhid "quirks=0x07c0:0x1584:0x40000010"`
 
-Or to always load, add the following to your boot parameters. This is usually done in the configs of your boot loader (such as grub), but please check with your distro's documentation.
+Or to always load, add the following to your boot parameters. This is usually done in the configs of your boot loader (such as grub in `/etc/default/grub`), but please check with your distro's documentation.
 
-`usbhid.quirks=0x07c0:0x1584:0x40000410`
+`usbhid.quirks=0x07c0:0x1584:0x40000010`
 
 ## Testing
 
@@ -38,9 +38,8 @@ To test output, `utils/hid-itgio-test.py` will cycle all 16 lights.
 
 ## Known Issues
 
-This module is a work in progress and as such is not currently stable. It is being published for the sake of research and collaboration.
+This module in short testing has preformed well as a means to play StepMania. It is a work in progress, and taking PRs for improvement.
 
-* Input can be stuck on momentarily. This may be due to Linux not polling the device any further. This is my current focus as even with an overwritten 1ms/1kHz polling the device may require a write before a read...
-* Module can crash during unloading. Potential problem with unloading the LED submodule. Sometimes it works great, others not.
+* Module can crash during unloading. Potential problem with unloading the LED submodule. Sometimes it works great, others not, I cannot pin down precisely what the issue is.
 
 # Thank you for playing.
